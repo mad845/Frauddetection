@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Panel de Deteccion de Fraude</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; background:#0f172a; color:#e2e8f0; margin:0; padding:2rem; }
+  h1 { color:#38bdf8; }
+  .form-card, .table-card { background:#1e293b; border-radius:12px; padding:1.5rem; margin-bottom:2rem; }
+  input, select, button { padding:0.5rem; margin:0.25rem 0; border-radius:6px; border:1px solid #334155; background:#0f172a; color:#e2e8f0; width:100%; box-sizing:border-box; }
+  button { background:#38bdf8; color:#0f172a; font-weight:bold; cursor:pointer; border:none; }
+  table { width:100%; border-collapse: collapse; }
+  th, td { text-align:left; padding:0.5rem; border-bottom:1px solid #334155; font-size:0.9rem; }
+  .APPROVED { color:#4ade80; }
+  .FLAGGED { color:#facc15; }
+  .REJECTED { color:#f87171; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr 2fr; gap:1.5rem; }
+</style>
+</head>
+<body>
+  <h1>🛡️ Panel de Deteccion de Fraude en Tiempo Real</h1>
+  <div class="grid">
+    <div class="form-card">
+      <h3>Iniciar sesión</h3>
+      <label>Usuario</label>
+      <input id="username" value="admin">
+      <label>Contraseña</label>
+      <input id="password" type="password" value="admin123">
+      <button onclick="login()">Ingresar</button>
+      <p id="loginStatus"></p>
+    </div>
+
+    <div class="form-card">
+      <h3>Nueva transaccion</h3>
+      <label>Numero de cuenta</label>
+      <input id="accountNumber" value="ACC-0001">
+      <label>Monto</label>
+      <input id="amount" type="number" value="150">
+      <label>Comercio</label>
+      <input id="merchant" value="Tienda Online XYZ">
+      <label>Pais del comercio</label>
+      <input id="merchantCountry" value="AR">
+      <label>Canal</label>
+      <select id="channel">
+        <option>ONLINE</option>
+        <option>POS</option>
+        <option>ATM</option>
+        <option>TRANSFER</option>
+      </select>
+      <button onclick="sendTransaction()">Enviar transaccion</button>
+      <p id="status"></p>
+    </div>
+
+    <div class="table-card">
+      <h3>Alertas en vivo</h3>
+      <table>
+        <thead>
+          <tr><th>Cuenta</th><th>Monto</th><th>Comercio</th><th>Riesgo</th><th>Estado</th><th>Motivo</th></tr>
+        </thead>
+        <tbody id="alertsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+const JAVA_SERVICE_URL = "http://localhost:8080";
+let authToken = null;
+
+async function login() {
+  const username = document.getElementById('username').value;
+  const password = document.getElementById('password').value;
+  const statusEl = document.getElementById('loginStatus');
+  try {
+    const res = await fetch(`${JAVA_SERVICE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    if (!res.ok) throw new Error((await res.json()).error || 'Login fallido');
+    const data = await res.json();
+    authToken = data.token;
+    statusEl.textContent = 'Sesion iniciada correctamente ✅';
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+  }
+}
+
+async function sendTransaction() {
+  const statusEl = document.getElementById('status');
+  if (!authToken) {
+    statusEl.textContent = 'Primero iniciá sesión para obtener un token.';
+    return;
+  }
+  const body = {
+    accountNumber: document.getElementById('accountNumber').value,
+    amount: parseFloat(document.getElementById('amount').value),
+    merchant: document.getElementById('merchant').value,
+    merchantCountry: document.getElementById('merchantCountry').value,
+    channel: document.getElementById('channel').value,
+  };
+  try {
+    const res = await fetch(`${JAVA_SERVICE_URL}/api/transactions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`
+      },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    statusEl.textContent = `Transaccion enviada: ${data.transactionUuid} (esperando analisis...)`;
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+  }
+}
+
+function connectWebSocket() {
+  const socket = new SockJS(`${JAVA_SERVICE_URL}/ws-alerts`);
+  const stompClient = Stomp.over(socket);
+  stompClient.connect({}, () => {
+    stompClient.subscribe('/topic/alerts', (message) => {
+      const alert = JSON.parse(message.body);
+      addAlertRow(alert);
+    });
+  });
+}
+
+function addAlertRow(alert) {
+  const tbody = document.getElementById('alertsBody');
+  const row = document.createElement('tr');
+  row.innerHTML = `
+    <td>${alert.accountNumber}</td>
+    <td>$${alert.amount}</td>
+    <td>${alert.merchant ?? '-'}</td>
+    <td>${(alert.riskScore * 100).toFixed(1)}%</td>
+    <td class="${alert.status}">${alert.status}</td>
+    <td>${alert.reason}</td>
+  `;
+  tbody.prepend(row);
+}
+
+connectWebSocket();
+</script>
+</body>
+</html>
